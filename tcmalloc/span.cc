@@ -97,6 +97,10 @@ double Span::Fragmentation(size_t object_size) const {
 // a stack, but since the free objects are not likely to be cache-hot the
 // chain of dependent misses is very cache-unfriendly. The current
 // organization reduces number of cache misses during push/pop.
+// (我们需要组织一个freelist,我们可以使用空闲的object来组织.注意这里我们会将这个链表组织为
+//  栈stack的形式,因为我们希望freelist更加地cache友好,为了达到这个目的,我们会将好几个free object
+// 索引放到一个object中,这样可以令cache的命中率更高.但因为一个object中存储了好几个free
+// object 的 index 所以我们只能将freelist组织为stack的形式)
 //
 // Objects in the freelist are represented by 2-byte indices. The index is
 // object offset from the span start divided by a constant. For small objects
@@ -106,14 +110,20 @@ double Span::Fragmentation(size_t object_size) const {
 // The freelist has two components. First, we have a small array-based cache
 // (4 objects) embedded directly into the Span (cache_ and cache_size_). We can
 // access this without touching any objects themselves.
+// (freelist 分为两个部分,首先我们做一个高速的缓存,我们可以通过缓存快速取到free
+// object)
 //
 // The rest of the freelist is stored as arrays inside free objects themselves.
 // We can store object_size / 2 indexes in any object, but this is not always
 // sufficient to store the entire contents of a Span in a single object. So we
-// reserve the first index slot in an object to form a linked list. We use the
-// first object in that list (freelist_) as an array to push/pop from; any
+// reserve the first index slot in an object to form a linked list. 
+// (我们保留第一个槽位的index 'freelist_',以此来形成一个链表).
+// We use the first object in that list (freelist_) as an array to push/pop from; any
 // subsequent objects in the list's arrays are guaranteed to be full.
-//
+// (我们将freelist_的第一个对象用于链接这个链表,实际上object中的每一个idx都是一个free object index
+//  不过为了组成一个 链表/stack 我们赋予第一个index特殊意义,即认为第一个index是freelist指向下一个list array
+//  的index,这样就将我们的链表串联起来了)
+// 
 // Graphically this can be depicted as follows:
 //
 //         freelist_  embed_count_         cache_        cache_size_
@@ -245,6 +255,7 @@ int Span::BuildFreelist(size_t size, size_t count, void** batch, int N,
   const uintptr_t start = first_page_.start_uintptr();
   char* ptr = reinterpret_cast<char*>(start);
   int result = N <= count ? N : count;
+  // 先将申请的空间给batch
   for (int i = 0; i < result; ++i) {
     batch[i] = ptr;
     ptr += size;
@@ -267,6 +278,7 @@ int Span::BuildFreelist(size_t size, size_t count, void** batch, int N,
   ObjIdx idxEnd = count * idxStep;
 
   // Then, push as much as we can into the cache_.
+  // 优先将对象放入cache中,cache 的索引性能优于 freelist
   TC_ASSERT_GE(max_cache_size, kCacheSize);
   TC_ASSERT_LE(max_cache_size, kLargeCacheSize);
   int cache_size = 0;
@@ -280,6 +292,7 @@ int Span::BuildFreelist(size_t size, size_t count, void** batch, int N,
   // Note: we take freelist objects from the beginning and stacked objects
   // from the end. This has a nice property of not paging in whole span at once
   // and not draining whole cache.
+  // 剩余的object加入freelist_的索引,以栈的形成索引,详细的组织形式看 span.cc:100
   ObjIdx* host = nullptr;  // cached first object on freelist
   const size_t max_embed = size / sizeof(ObjIdx) - 1;
   int embed_count = 0;

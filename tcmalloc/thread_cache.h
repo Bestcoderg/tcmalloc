@@ -232,7 +232,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* ThreadCache::Allocate(
     size_ -= allocated_size;
     return ret;
   }
-
+  // ThreadCache FreeList为空则向CentralFreeList(Middle-end)申请新的objects
   return FetchFromTransferCache(size_class, allocated_size);
 }
 

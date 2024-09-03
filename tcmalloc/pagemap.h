@@ -57,7 +57,10 @@ class PageMap2 {
  private:
   // The leaf node (regardless of pointer size) always maps 2^15 entries;
   // with 8K pages, this gives us 256MB mapped per leaf node.
+  // 246M / 8K = 32K = 2^15, 一个leaf有32k个page
   static constexpr int kLeafBits = 15;
+  // BITS = all virtual addr - page shift
+  // BITS - kLeafBits = all Leaf number
   static constexpr int kLeafLength = 1 << kLeafBits;
   static constexpr int kRootBits = (BITS >= kLeafBits) ? (BITS - kLeafBits) : 0;
   // (1<<kRootBits) must not overflow an "int"
@@ -81,6 +84,10 @@ class PageMap2 {
     void* hugepage[kLeafHugepages];
   };
 
+  // 将整个虚拟地址,分割为 page / Leaf
+  // kRootLength为整个虚拟地址所能分割的Leaf的个数,即全地址空间映射
+  // 再分一层Leaf的好处是可以让初始化申请的数组长度大幅度减少,每个Leaf涵盖的
+  // 地址范围所需要的span指针的申请可以延迟到这个Leaf范围有span加入时
   Leaf* root_[kRootLength];  // Top-level node
   size_t bytes_used_;
 
@@ -115,6 +122,7 @@ class PageMap2 {
 
   // No locks required.  See SYNCHRONIZATION explanation at top of tcmalloc.cc.
   // Requires that the span is known to already exist.
+  // 通过PageID找到span
   Span* get_existing(Number k) const ABSL_NO_THREAD_SAFETY_ANALYSIS {
     const Number i1 = k >> kLeafBits;
     const Number i2 = k & (kLeafLength - 1);
@@ -358,6 +366,7 @@ class PageMap3 {
   }
 
   bool Ensure(Number start, size_t n) {
+    // 这个函数用于确保申请的这片内存用于维护的Leaf的存在
     for (Number key = start; key <= start + n - 1;) {
       const Number i1 = key >> (kLeafBits + kMidBits);
       const Number i2 = (key >> kLeafBits) & (kMidLength - 1);
@@ -395,6 +404,7 @@ class PageMap3 {
   const void* RootAddress() { return root_; }
 };
 
+// PageMap 主要用于维护 page -> span 的映射
 class PageMap {
  public:
   constexpr PageMap() : map_{} {}
@@ -497,6 +507,8 @@ class PageMap {
   }
 
  private:
+
+// radix tree
 #ifdef TCMALLOC_USE_PAGEMAP3
   PageMap3<kAddressBits - kPageShift, MetaDataAlloc> map_;
 #else

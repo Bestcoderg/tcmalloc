@@ -75,6 +75,8 @@ static constexpr size_t kNumLists = 8;
 static constexpr size_t kFewObjectsAllocMaxLimit = 16;
 
 // Data kept per size-class in central cache.
+// 每个大小的TransferCache持有一个CentralFreeList
+// 用于管理持有的spans(相较TransferCache是管理objects)
 template <typename ForwarderT>
 class CentralFreeList {
  public:
@@ -260,6 +262,7 @@ class CentralFreeList {
   // the kNumLists nonempty_ lists based on their allocated objects. If span
   // prioritization is disabled, we add spans to the nonempty_[kNumlists-1]
   // list, leaving other lists unused.
+  // 对于索引Span的list的优化,优先索引剩余空闲objects更小的spans,减少内存碎片的产生
   HintedTrackerLists<Span, kNumLists> nonempty_ ABSL_GUARDED_BY(lock_);
   bool use_all_buckets_for_few_object_spans_;
 
@@ -304,6 +307,8 @@ inline Span* CentralFreeList<Forwarder>::ReleaseToSpans(
     void* object, Span* span, size_t object_size, uint32_t size_reciprocal,
     uint32_t max_span_cache_size) {
   if (ABSL_PREDICT_FALSE(span->FreelistEmpty(object_size))) {
+    // 全满的情况
+    // 如果Span是空的,需要加入nonempty_的索引中
     const uint8_t index = GetFirstNonEmptyIndex();
     nonempty_.Add(span, index);
     span->set_nonempty_index(index);
@@ -312,6 +317,7 @@ inline Span* CentralFreeList<Forwarder>::ReleaseToSpans(
   const uint8_t prev_index = span->nonempty_index();
   const uint16_t prev_allocated = span->Allocated();
   const uint8_t prev_bitwidth = absl::bit_width(prev_allocated);
+  // 如果span在object释放后完全空了,则return此 span,否则return nullptr
   if (ABSL_PREDICT_FALSE(!span->FreelistPush(
           object, object_size, size_reciprocal, max_span_cache_size))) {
     // Update the histogram as the span is full and will be removed from the
@@ -347,6 +353,8 @@ inline Span* CentralFreeList<Forwarder>::FirstNonEmptySpan() {
   // Scan nonempty_ lists in the range [first_nonempty_index_, kNumLists) and
   // return the span from a non-empty list if one exists. If all the lists are
   // empty, return nullptr.
+  // 相较较早版本,这里做了优化,即被使用过的Span会被放在下面的队列中被优先查找
+  // 这样的处理方式会优先使用已经被引用的Span,减少内存碎片的产生__
   return nonempty_.PeekLeast(GetFirstNonEmptyIndex());
 }
 
@@ -369,6 +377,8 @@ inline uint8_t CentralFreeList<Forwarder>::IndexFor(uint16_t allocated,
   // 7, 6, ... 0 respectively.  When the allocated objects are more than
   // kNumlists, then we map the span to bucket 0.
   ASSUME(allocated > 0);
+  // 使用 objects 多的 Span 放在下面(优先选用) 减少内存碎片
+  // 未被使用过的 Span 放在 kNumLists - 1
   if (use_all_buckets_for_few_object_spans_) {
     if (allocated <= kNumLists) {
       return kNumLists - allocated;
@@ -387,6 +397,7 @@ inline uint8_t CentralFreeList<Forwarder>::IndexFor(uint16_t allocated,
   // [1, 2) -> 7, [2, 4) -> 6, [4, 8) -> 5, [8, 16) -> 4, [16, 32) -> 3, [32,
   // 64) -> 2, [64, 128) -> 1, [128, 1024) -> 0.
   ASSUME(bitwidth > 0);
+  // 如果不采用上一种映射方式,则根据长度的位长来做映射.
   const uint8_t offset = std::min<size_t>(bitwidth, kNumLists);
   const uint8_t index = kNumLists - offset;
   ASSUME(index < kNumLists);
@@ -439,6 +450,7 @@ inline void CentralFreeList<Forwarder>::InsertRange(absl::Span<void*> batch) {
       Span* span = ReleaseToSpans(batch[i], spans[i], object_size,
                                   size_reciprocal, max_span_cache_size);
       if (ABSL_PREDICT_FALSE(span)) {
+        // 完全空的span
         free_spans[free_count] = span;
         free_count++;
       }
@@ -450,6 +462,7 @@ inline void CentralFreeList<Forwarder>::InsertRange(absl::Span<void*> batch) {
 
   // Then, release all free spans into page heap under its mutex.
   if (ABSL_PREDICT_FALSE(free_count)) {
+    // 回收全空的span
     DeallocateSpans(absl::MakeSpan(free_spans, free_count));
   }
 }
@@ -500,6 +513,7 @@ inline int CentralFreeList<Forwarder>::RemoveRange(void** batch, int N) {
   do {
     Span* span = FirstNonEmptySpan();
     if (ABSL_PREDICT_FALSE(!span)) {
+      // 没有空闲的span,需要向PageHeap申请新的Span
       result += Populate(batch + result, N - result);
       break;
     }
@@ -507,6 +521,8 @@ inline int CentralFreeList<Forwarder>::RemoveRange(void** batch, int N) {
     const uint16_t prev_allocated = span->Allocated();
     const uint8_t prev_bitwidth = absl::bit_width(prev_allocated);
     const uint8_t prev_index = span->nonempty_index();
+    // 如果 nonempty 中有 span 则说明 CentralFreeList 至少有一个空闲的object[cl]
+    // 实际上 RemoveRange 触发的时候 object[cl] 最少只需要一个,批量申请是为了优化性能
     int here = span->FreelistPopBatch(batch + result, N - result, object_size);
     TC_ASSERT_GT(here, 0);
     // As the objects are being popped from the span, its utilization might
@@ -520,11 +536,13 @@ inline int CentralFreeList<Forwarder>::RemoveRange(void** batch, int N) {
       RecordSpanUtil(cur_bitwidth, /*increase=*/true);
     }
     if (span->FreelistEmpty(object_size)) {
+      // Span 已经没有空闲对象
       nonempty_.Remove(span, prev_index);
     } else {
       // If span allocation changes so that it must be moved to a different
       // nonempty_ list, we remove it from the previous list and add it to the
       // desired list indexed by cur_index.
+      // 因为 Span 中剩余空闲对象发生改变,需要调整一下Span在nonempty_中索引队列的位置
       const uint8_t cur_index = IndexFor(cur_allocated, cur_bitwidth);
       if (cur_index != prev_index) {
         nonempty_.Remove(span, prev_index);
@@ -552,6 +570,7 @@ inline int CentralFreeList<Forwarder>::Populate(void** batch, int N)
     return 0;
   }
 
+  // 将刚申请的span组成objects放入freelist
   int result = span->BuildFreelist(object_size_, objects_per_span_, batch, N,
                                    forwarder_.max_span_cache_size());
   TC_ASSERT_GT(result, 0);
@@ -566,6 +585,7 @@ inline int CentralFreeList<Forwarder>::Populate(void** batch, int N)
   const uint8_t bitwidth = absl::bit_width(allocated);
   RecordSpanUtil(bitwidth, /*increase=*/true);
   if (!span_empty) {
+    // 要先算一下这个span在nonempty中的index
     const uint8_t index = IndexFor(allocated, bitwidth);
     nonempty_.Add(span, index);
     span->set_nonempty_index(index);
@@ -576,8 +596,8 @@ inline int CentralFreeList<Forwarder>::Populate(void** batch, int N)
 
 template <class Forwarder>
 Span* CentralFreeList<Forwarder>::AllocateSpan() {
-  Span* span =
-      forwarder_.AllocateSpan(size_class_, objects_per_span_, pages_per_span_);
+  // StaticForwarder::AllocateSpan
+  Span* span = forwarder_.AllocateSpan(size_class_, objects_per_span_, pages_per_span_);
   if (ABSL_PREDICT_FALSE(span == nullptr)) {
     TC_LOG("tcmalloc: allocation failed %v", pages_per_span_);
   }

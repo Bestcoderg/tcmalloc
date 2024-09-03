@@ -86,6 +86,7 @@ void ThreadCache::Cleanup() {
 void* ThreadCache::FetchFromTransferCache(size_t size_class, size_t byte_size) {
   FreeList* list = &list_[size_class];
   TC_ASSERT(list->empty());
+  // 批量申请优化效率
   const int batch_size = tc_globals.sizemap().num_objects_to_move(size_class);
 
   const int num_to_move = std::min<int>(list->max_length(), batch_size);
@@ -104,6 +105,7 @@ void* ThreadCache::FetchFromTransferCache(size_t size_class, size_t byte_size) {
   // Increase max length slowly up to batch_size.  After that,
   // increase by batch_size in one shot so that the length is a
   // multiple of batch_size.
+  // 逐渐地增加ThreadCache 中 FreeList 的容量,命中频率越高长度越长
   if (list->max_length() < batch_size) {
     list->set_max_length(list->max_length() + 1);
   } else {

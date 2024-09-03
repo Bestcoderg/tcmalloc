@@ -41,6 +41,7 @@ void* Arena::Alloc(size_t bytes, std::align_val_t alignment) {
   }
   char* result;
   if (free_avail_ < bytes) {
+    // 如果触发内存增长,则每次申请一片大内存
     size_t ask = bytes > kAllocIncrement ? bytes : kAllocIncrement;
     auto [ptr, actual_size] = SystemAlloc(ask, kPageSize, MemoryTag::kMetadata);
     free_area_ = reinterpret_cast<char*>(ptr);

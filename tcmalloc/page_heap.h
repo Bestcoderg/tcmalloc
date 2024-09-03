@@ -105,6 +105,7 @@ class PageHeap final : public PageAllocatorInterface {
   SpanListPair large_ ABSL_GUARDED_BY(pageheap_lock);
 
   // Array mapping from span length to a doubly linked list of free spans
+  // 空闲 span 的列表,切按照span中page的数量做划分
   SpanListPair free_[kMaxPages.raw_num()] ABSL_GUARDED_BY(pageheap_lock);
 
   // Statistics on system, free, and unmapped bytes

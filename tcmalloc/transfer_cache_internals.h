@@ -147,6 +147,8 @@ class TransferCache {
 
   // Insert the specified batch into the transfer cache.  N is the number of
   // elements in the range.  RemoveRange() is the opposite operation.
+  // batch 是 absl::Span 而不是 tcmalloc::Span 是一个对原生数组的包装
+  // batch.size() 为原生数组长度 kMaxObjectsToMove
   void InsertRange(int size_class, absl::Span<void *> batch)
       ABSL_LOCKS_EXCLUDED(lock_) {
     const int N = batch.size();
@@ -184,9 +186,11 @@ class TransferCache {
     TC_ASSERT(0 < N && N <= kMaxObjectsToMove);
     auto info = slot_info_.load(std::memory_order_relaxed);
     if (info.used) {
+      // TransferCache 中有可以用的 object
       AllocationGuardSpinLockHolder h(&lock_);
       // Refetch with the lock
       info = slot_info_.load(std::memory_order_relaxed);
+      // 这里并不保证一定返回N个object,因为每次实际上是需要一个object触发的,所以这里N只是期望值
       int got = std::min(N, info.used);
       if (got) {
         info.used -= got;
@@ -201,6 +205,7 @@ class TransferCache {
 
     remove_misses_.LossyAdd(1);
     remove_object_misses_.Inc(N);
+    // TransferCache 中没有可用的object则向CentralFreeList(Span)申请新的空间来构建新的object[cl]
     return freelist().RemoveRange(batch, N);
   }
 
@@ -388,6 +393,7 @@ class TransferCache {
 
   // Pointer to array of free objects.  Use GetSlot() to get pointers to
   // entries.
+  // 指向所有free对象的指针数组,数组大小是固定的,超出数组的元素将被放入freelist_
   void **slots_ ABSL_GUARDED_BY(lock_);
 
   FreeList freelist_do_not_access_directly_;

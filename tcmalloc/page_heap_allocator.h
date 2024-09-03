@@ -89,6 +89,8 @@ class PageHeapAllocator {
 
   void Delete(T* p) ABSL_ATTRIBUTE_NONNULL()
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(pageheap_lock) {
+    // 将free_list直接存入这个空节点内存中，然后将free_list的头指针指向这个节点地址
+    // 相当于将空节点内存复用为free_list
     *(reinterpret_cast<void**>(p)) = free_list_;
 #ifdef ABSL_HAVE_ADDRESS_SANITIZER
     // Poison the object on the freelist.  We do not dereference it after this
@@ -105,6 +107,7 @@ class PageHeapAllocator {
 
  private:
   // Arena from which to allocate memory
+  // 对于每个模板类的内存申请再做优化,每次的内存申请走Arena , Arena 仅增长不回收 TODO
   Arena* arena_;
 
   // Free list of already carved objects
