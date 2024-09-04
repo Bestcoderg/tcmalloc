@@ -104,7 +104,7 @@ label##_trampoline:                                               \
 
 // This is part of the upstream rseq ABI.  The 4 bytes prior to the abort IP
 // must match TCMALLOC_PERCPU_RSEQ_SIGNATURE (as configured by our rseq
-// syscall's signature parameter).  This signature is used to annotate valid
+// syscalls signature parameter).  This signature is used to annotate valid
 // abort IPs (since rseq_cs could live in a user-writable segment).
 //
 // To allow this to be safely executed as a valid instruction, we encode the
@@ -149,7 +149,7 @@ label##_trampoline:                                               \
  * FETCH_CPU assumes &__rseq_abi is in %rax.  We cannot call
  * tcmalloc_tls_fetch_pic at this point, as we have started our restartable
  * sequence.  If we are prempted there, the kernel will clear rseq_cs as
- * tcmalloc_tls_fetch_pic does not appear in the restartable sequence's address
+ * tcmalloc_tls_fetch_pic does not appear in the restartable sequences address
  * range.
  */
 #define FETCH_CPU(dest, offset) movzwl (%rax, offset), dest;

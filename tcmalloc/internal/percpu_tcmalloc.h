@@ -429,6 +429,9 @@ inline size_t TcmallocSlab<NumClasses>::Capacity(int cpu,
 #define TCMALLOC_RSEQ_RELOC_TYPE "R_X86_64_NONE"
 #define TCMALLOC_RSEQ_JUMP "jmp"
 #if !defined(__PIC__) && !defined(__PIE__)
+
+// 将 __rseq_cs_#name 加载到内存地址[rseq_cs_addr]中
+// TCMALLOC_RSEQ_INPUTS 中设置？TODO
 #define TCMALLOC_RSEQ_SET_CS(name) \
   "movq $__rseq_cs_" #name "_%=, %[rseq_cs_addr]\n"
 #else
@@ -480,22 +483,22 @@ inline size_t TcmallocSlab<NumClasses>::Capacity(int cpu,
 #define TCMALLOC_RSEQ_PROLOGUE(name)                                          \
   /* __rseq_cs only needs to be writeable to allow for relocations.*/         \
   ".pushsection __rseq_cs, \"aw?\"\n"                                         \
-  ".balign 32\n"                                                              \
-  ".local __rseq_cs_" #name                                                   \
+  ".balign 32\n"    /*对齐到32位边界,保证内存的对齐*/                         \
+  ".local __rseq_cs_" #name /*将__rseq_cs_#name 声明为本地符号,确保link时不被外部引用*/  \
   "_%=\n"                                                                     \
-  ".type __rseq_cs_" #name                                                    \
+  ".type __rseq_cs_" #name  /*定义符号的类型和大小，这里定义的是一个对象（@object），大小为 32 字节*/  \
   "_%=,@object\n"                                                             \
   ".size __rseq_cs_" #name                                                    \
   "_%=,32\n"                                                                  \
   "__rseq_cs_" #name                                                          \
   "_%=:\n"                                                                    \
-  ".long 0x0\n"                                                               \
-  ".long 0x0\n"                                                               \
-  ".quad 4f\n"                                                                \
+  ".long 0x0\n"    /*初始化 __rseq_cs_#name   .long 32位 4字节*/              \
+  ".long 0x0\n"    /*所以 32 = .long(4)*2 + .quad(8)*3 */                     \
+  ".quad 4f\n"     /*指向代码的开始标签 4f (f 代表向前查找),即为后面的4:标签位置*/  \
   ".quad 5f - 4f\n"                                                           \
   ".quad 2f\n"                                                                \
   ".popsection\n" TCMALLOC_RSEQ_RELOC                                         \
-  ".pushsection __rseq_cs_ptr_array, \"aw?\"\n"                               \
+  ".pushsection __rseq_cs_ptr_array, \"aw?\"\n"  /*将__rseq_cs_#name 存储到 array 中*/  \
   "1:\n"                                                                      \
   ".balign 8\n"                                                               \
   ".quad __rseq_cs_" #name                                                    \
@@ -513,19 +516,19 @@ inline size_t TcmallocSlab<NumClasses>::Capacity(int cpu,
                                               rseq_cs could live in a         \
                                               user-writable segment). */      \
   ".long %c[rseq_sig]\n"                                                      \
-  ".local " #name                                                             \
+  ".local " #name     /*标记 #name 为一个local function 后续调用*/            \
   "_trampoline_%=\n"                                                          \
   ".type " #name                                                              \
   "_trampoline_%=,@function\n"                                                \
   "" #name                                                                    \
   "_trampoline_%=:\n"                                                         \
-  "2:\n" TCMALLOC_RSEQ_JUMP                                                   \
+  "2:\n" TCMALLOC_RSEQ_JUMP  /*jmp 3f 向后跳转到3位置执行(f向前继续查找)*/    \
   " 3f\n"                                                                     \
   ".size " #name "_trampoline_%=, . - " #name                                 \
   "_trampoline_%=\n"                                                          \
   ".popsection\n"                   /* Prepare */                             \
-  "3:\n" TCMALLOC_RSEQ_SET_CS(name) /* Start */                               \
-      "4:\n"
+  "3:\n" TCMALLOC_RSEQ_SET_CS(name) /* Start */ /*类似于movq $__rseq_cs_#name, __rseq_abi.rseq_cs;*/ \
+  "4:\n"
 
 #define TCMALLOC_RSEQ_INPUTS                                                 \
   [rseq_cs_addr] "m"(__rseq_abi.rseq_cs),                                    \
@@ -778,7 +781,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* TcmallocSlab<NumClasses>::Pop(
     size_t size_class) {
   TC_ASSERT_NE(size_class, 0);
   void* next;
-  void* result;
+  void* result; 
   uintptr_t scratch, current;
 
 #if TCMALLOC_INTERNAL_PERCPU_USE_RSEQ_ASM_GOTO_OUTPUT
@@ -787,6 +790,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* TcmallocSlab<NumClasses>::Pop(
   bool underflow;
   asm(
 #endif
+      // Rseq 环境设置
       TCMALLOC_RSEQ_PROLOGUE(TcmallocSlab_Internal_Pop)
       // scratch = tcmalloc_slabs;
       "movq %[rseq_slabs_addr], %[scratch]\n"
@@ -801,6 +805,8 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* TcmallocSlab<NumClasses>::Pop(
 #endif
       // current = scratch->header[size_class].current;
       "movzwq (%[scratch], %[size_class], 4), %[current]\n"
+      // result = scratch + current * 8 - 8 
+      // 这里乘8是因为64位平台,指针8字节
       "movq -8(%[scratch], %[current], 8), %[result]\n"
 #if TCMALLOC_INTERNAL_PERCPU_USE_RSEQ_ASM_GOTO_OUTPUT
       "testb $%c[begin_mark_mask], %b[result]\n"
@@ -811,8 +817,13 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* TcmallocSlab<NumClasses>::Pop(
   // Important! code below this must not affect any flags (i.e.: ccc)
   // If so, the above code needs to explicitly set a ccc return value.
 #endif
+      // next = scratch + current * 8 - 16 
+      // 相当于 next 等于 scratch[current - 2]
       "movq -16(%[scratch], %[current], 8), %[next]\n"
+      // --current
       "lea -1(%[current]), %[current]\n"
+      // scratch + size_class * 4 = current
+      // 前面是Header,为32位(16+16),所以为4
       "movw %w[current], (%[scratch], %[size_class], 4)\n"
       // Commit
       "5:\n"
