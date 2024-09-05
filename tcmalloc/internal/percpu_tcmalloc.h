@@ -1119,6 +1119,8 @@ void TcmallocSlab<NumClasses>::InitCpuImpl(
       ~(sizeof(void*) - 1));
   bool prev_empty = false;
   for (size_t size_class = 1; size_class < NumClasses; ++size_class) {
+    // 初始化所有的 slab[cl] 
+    // 分配策略可见: CpuCache<Forwarder>::MaxCapacity
     size_t cap = capacity(size_class);
     TC_CHECK_EQ(static_cast<uint16_t>(cap), cap);
 
