@@ -687,6 +687,7 @@ class CpuCache {
       subtle::percpu::Shift shift, int num_cpus, uint8_t shift_offset,
       uint8_t resize_offset);
 
+  // Slabs
   Freelist freelist_;
 
   // Tracking data for each CPU's cache resizing efforts.
@@ -728,6 +729,7 @@ class CpuCache {
 
 template <class Forwarder>
 void* CpuCache<Forwarder>::Allocate(size_t size_class) {
+  // 尝试直接从 slab 中取 object
   void* ret = AllocateFast(size_class);
   if (ABSL_PREDICT_TRUE(ret != nullptr)) {
     return ret;
@@ -739,6 +741,7 @@ template <class Forwarder>
 inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* CpuCache<Forwarder>::AllocateFast(
     size_t size_class) {
   TC_ASSERT_GT(size_class, 0);
+  // TcmallocSlab  rseq
   return freelist_.Pop(size_class);
 }
 
@@ -941,11 +944,14 @@ inline void CpuCache<Forwarder>::Activate() {
 
   shift_bounds_.initial_shift = kInitialBasePerCpuShift;
   shift_bounds_.max_shift = kMaxBasePerCpuShift;
+
+  // 单个CPU期望申请的slab大小(2^per_cpu_shift)
   uint8_t per_cpu_shift = forwarder_.per_cpu_caches_dynamic_slab_enabled()
                               ? kInitialBasePerCpuShift
                               : kMaxBasePerCpuShift;
 
   const auto& topology = forwarder_.numa_topology();
+  // NUMA 需要额外的shift
   const uint8_t numa_shift = NumaShift(topology);
   const uint8_t wider_slab_shift = UseWiderSlabs() ? 1 : 0;
 
@@ -1004,6 +1010,7 @@ inline void CpuCache<Forwarder>::Activate() {
     resize_[cpu].capacity.store(max_cache_size, std::memory_order_relaxed);
   }
 
+  // init slabs
   void* slabs =
       AllocOrReuseSlabs(&forwarder_.Alloc,
                         subtle::percpu::ToShiftType(per_cpu_shift), num_cpus,

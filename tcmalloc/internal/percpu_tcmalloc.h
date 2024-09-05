@@ -952,6 +952,7 @@ underflow_path:
 template <size_t NumClasses>
 inline ABSL_ATTRIBUTE_ALWAYS_INLINE void* TcmallocSlab<NumClasses>::Pop(
     size_t size_class) {
+  // 不支持 rseq 的环境不可以启用 CpuCache
   return nullptr;
 }
 #endif
@@ -1060,7 +1061,7 @@ void TcmallocSlab<NumClasses>::Init(
   }
   begins_ = static_cast<std::atomic<uint16_t>*>(alloc(
       sizeof(begins_[0]) * NumClasses, std::align_val_t{ABSL_CACHELINE_SIZE}));
-  InitSlabs(slabs, shift, capacity);
+  InitSlabs(slabs, shift, capacity)
 
 #if TCMALLOC_INTERNAL_PERCPU_USE_RSEQ
   // This is needed only for tests that create/destroy slabs,
